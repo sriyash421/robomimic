@@ -552,34 +552,51 @@ class BC_RNN(BC):
             action (torch.Tensor): action tensor
         """
         assert not self.nets.training
+        assert not self._rnn_is_open_loop
+        # if self._rnn_hidden_state is None or self._rnn_counter % self._rnn_horizon == 0:
+            # batch_size = list(obs_dict.values())[0].shape[0]
+            # self._rnn_hidden_state = self.nets["policy"].get_rnn_init_state(batch_size=batch_size, device=self.device)
 
-        if self._rnn_hidden_state is None or self._rnn_counter % self._rnn_horizon == 0:
-            batch_size = list(obs_dict.values())[0].shape[0]
-            self._rnn_hidden_state = self.nets["policy"].get_rnn_init_state(batch_size=batch_size, device=self.device)
-
-            if self._rnn_is_open_loop:
-                # remember the initial observation, and use it instead of the current observation
-                # for open-loop action sequence prediction
-                self._open_loop_obs = TensorUtils.clone(TensorUtils.detach(obs_dict))
+            # if self._rnn_is_open_loop:
+            #     # remember the initial observation, and use it instead of the current observation
+            #     # for open-loop action sequence prediction
+            #     self._open_loop_obs = TensorUtils.clone(TensorUtils.detach(obs_dict))
 
         obs_to_use = obs_dict
-        if self._rnn_is_open_loop:
-            # replace current obs with last recorded obs
-            obs_to_use = self._open_loop_obs
+        # if self._rnn_is_open_loop:
+        #     # replace current obs with last recorded obs
+        #     obs_to_use = self._open_loop_obs
 
         self._rnn_counter += 1
         action, self._rnn_hidden_state = self.nets["policy"].forward_step(
             obs_to_use, goal_dict=goal_dict, rnn_state=self._rnn_hidden_state)
         return action
 
-    def reset(self):
+    def reset(self, resets):
         """
         Reset algo state to prepare for environment rollouts.
         """
-        self._rnn_hidden_state = None
-        self._rnn_counter = 0
-
-
+        batch_size = resets.shape[0]
+        init_hidden_state = self.nets["policy"].get_rnn_init_state(batch_size=batch_size, device=self.device)
+        if self._rnn_hidden_state is None:
+            self._rnn_hidden_state = init_hidden_state
+            self._rnn_counter = torch.zeros(
+                batch_size, dtype=torch.int64, device=self.device,
+            )
+        elif resets.any():
+            # reset hidden state
+            mask = resets.view(1, -1, 1).to(device=self.device).float()
+            self._rnn_hidden_state = tuple(
+                h * (1 - mask) + h0 * mask
+                for h, h0 in zip(self._rnn_hidden_state, init_hidden_state)
+            )
+            # reset counter
+            self._rnn_counter = torch.where(
+                resets,
+                torch.zeros_like(self._rnn_counter),
+                self._rnn_counter + 1,
+            )
+    
 class BC_RNN_GMM(BC_RNN):
     """
     BC training with an RNN GMM policy.
