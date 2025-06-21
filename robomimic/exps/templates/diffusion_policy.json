@@ -21,9 +21,6 @@
         },
         "epoch_every_n_steps": 100,
         "validation_epoch_every_n_steps": 10,
-        "env": null,
-        "additional_envs": null,
-        "render": false,
         "render_video": true,
         "keep_all_videos": false,
         "video_skip": 5,
@@ -56,7 +53,12 @@
         "cuda": true,
         "batch_size": 256,
         "num_epochs": 2000,
-        "seed": 1
+        "seed": 1,
+        "action_config": {
+            "actions": {
+                "normalization": "min_max"
+            }
+        }
     },
     "algo": {
         "optim_params": {
