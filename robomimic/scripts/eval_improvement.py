@@ -99,7 +99,7 @@ def main():
                         base_obs = obs
                         im_obs = dict()
                         for key in obs.keys():
-                            im_obs[key] = env.obs_history[key][-context_length:, 0].flatten()
+                            im_obs[key] = env.obs_history[key][-1][0].flatten()
                         im_obs["rewards"] = reward.flatten()
                         im_obs["dones"] = done.flatten()
                     
