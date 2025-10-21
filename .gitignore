@@ -1,8 +1,6 @@
 datasets/
 *_trained_models/
 slurm_logs
-submit.sh
-train_job.sh
 
 # pip distribution folder
 dist/
