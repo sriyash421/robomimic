@@ -776,7 +776,6 @@ class BC_Transformer(BC):
             action (torch.Tensor): action tensor
         """
         assert not self.nets.training
-
         output = self.nets["policy"](obs_dict, actions=None, goal_dict=goal_dict)
 
         if self.supervise_all_steps:

@@ -18,7 +18,7 @@ class EnvWrapper(object):
         Args:
             env (EnvBase instance): The environment to wrap.
         """
-        assert isinstance(env, EB.EnvBase) or isinstance(env, EnvWrapper)
+        # assert isinstance(env, EB.EnvBase) or isinstance(env, EnvWrapper)
         self.env = env
 
     @classmethod
