@@ -40,6 +40,7 @@ class SequenceDataset(torch.utils.data.Dataset):
         load_next_obs=True,
         lang=None,
         demo_limit=None,
+        seq_only=False
     ):
         """
         Dataset class for fetching sequences of experience.
@@ -94,6 +95,7 @@ class SequenceDataset(torch.utils.data.Dataset):
 
             demo_limit (int): if provided, limit the number of demonstrations to load from the dataset.
         """
+        self.seq_only = seq_only
         super(SequenceDataset, self).__init__()
 
         self.hdf5_path = os.path.expanduser(hdf5_path)
@@ -233,6 +235,8 @@ class SequenceDataset(torch.utils.data.Dataset):
                 assert demo_length >= 1  # sequence needs to have at least one sample
                 num_sequences = max(num_sequences, 1)
             else:
+                if self.seq_only:
+                    num_sequences = max(num_sequences, 1)
                 assert num_sequences >= 1  # assume demo_length >= (self.n_frame_stack - 1 + self.seq_length)
 
             for _ in range(num_sequences):
@@ -560,6 +564,10 @@ class SequenceDataset(torch.utils.data.Dataset):
         # determine sequence padding
         seq_begin_pad = max(0, num_frames_to_stack - index_in_demo)  # pad for frame stacking
         seq_end_pad = max(0, index_in_demo + seq_length - demo_length)  # pad for sequence length
+        if self.seq_only:
+            index_in_demo = 0
+            seq_being_pad = 0
+            seq_end_pad = 0
 
         # make sure we are not padding if specified.
         if not self.pad_frame_stack:

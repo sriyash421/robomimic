@@ -181,7 +181,8 @@ def train(config, device, resume=False):
         batch_size=config.train.batch_size,
         shuffle=(train_sampler is None),
         num_workers=config.train.num_data_workers,
-        drop_last=True
+        drop_last=True,
+        collate_fn=TorchUtils.collate_fn if config.algo_name == "dit_policy" else None
     )
 
     if config.experiment.validate:
@@ -239,6 +240,8 @@ def train(config, device, resume=False):
         device=device
     )
 
+    # model = torch.compile(model)
+
     if resume:
         # load ckpt dict
         print("*" * 50)
@@ -294,7 +297,12 @@ def train(config, device, resume=False):
         print("*" * 50)
         print("resuming training from epoch {}".format(start_epoch))
         print("*" * 50)
-
+    
+    # model.nets = torch.compile(model.nets)
+    num_gpus = torch.cuda.device_count()
+    if num_gpus > 1:
+        print("Using DataParallel with {} GPUs".format(num_gpus))
+        model.nets = torch.nn.DataParallel(model.nets)
     for epoch in range(start_epoch, config.train.num_epochs + 1):
         step_log = TrainUtils.run_epoch(
             model=model,

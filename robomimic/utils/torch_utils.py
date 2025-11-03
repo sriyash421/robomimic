@@ -700,3 +700,40 @@ def _axis_angle_rotation(axis: str, angle: torch.Tensor) -> torch.Tensor:
         raise ValueError("letter must be either X, Y or Z.")
 
     return torch.stack(R_flat, -1).reshape(angle.shape + (3, 3))
+
+def collate_fn(batch, add_attn_mask=True):
+    """
+    Custom collate function to handle batches with elements that are
+    dictionaries containing tensors of varying shapes or nested dictionaries.
+
+    Args:
+        batch (list): List of elements, where each element is a dictionary
+            with tensor values or nested dictionaries.
+
+    Returns:
+        collated_batch (dict): Dictionary with the same keys as the input
+            elements, where each value is a list of tensors from the batch or a nested
+            dictionary with collated tensors.
+    """
+    collated_batch = {}
+    for key in batch[0]:
+        values = [item[key] for item in batch]
+        if isinstance(values[0], dict):
+            collated_batch[key] = collate_fn(values, add_attn_mask=False)
+        else:
+            # convert values to tensor
+            if "index" in key:
+                values = torch.tensor(values, dtype=torch.long)
+            else:
+                values = [torch.tensor(v) for v in values]
+                collated_batch[key] = torch.nn.utils.rnn.pad_sequence(
+                    values, batch_first=True, padding_value=0.0)
+    if add_attn_mask:
+        # use actions key to determine sequence lengths
+        seq_lens = [item['actions'].shape[0] for item in batch]
+        max_len = collated_batch['actions'].shape[1]
+        attn_mask = torch.zeros((len(batch), max_len), dtype=torch.bool)
+        for i, l in enumerate(seq_lens):
+            attn_mask[i, :l] = 1
+        collated_batch['attention_mask'] = attn_mask
+    return collated_batch

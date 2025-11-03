@@ -1,5 +1,5 @@
 {
-    "algo_name": "diffusion_policy",
+    "algo_name": "dit_policy",
     "experiment": {
         "name": "test",
         "validate": false,
@@ -18,7 +18,7 @@
             "on_best_rollout_return": false,
             "on_best_rollout_success_rate": true
         },
-        "epoch_every_n_steps": 500,
+        "epoch_every_n_steps": 100,
         "validation_epoch_every_n_steps": 10,
         "env": null,
         "additional_envs": null,
@@ -39,19 +39,19 @@
     },
     "train": {
         "data": null,
-        "output_dir": "../diffusion_policy_ravens_trained_models",
+        "output_dir": "../dit_policy_trained_models",
         "normalize_weights_by_ds_size": false,
-        "num_data_workers": 20,
-        "hdf5_cache_mode": "low_dim",
-        "hdf5_use_swmr": false,
+        "num_data_workers": 0,
+        "hdf5_cache_mode": "all",
+        "hdf5_use_swmr": true,
         "hdf5_load_next_obs": false,
         "hdf5_normalize_obs": false,
         "hdf5_filter_key": null,
         "hdf5_validation_filter_key": null,
-        "seq_length": 16,
-        "pad_seq_length": true,
-        "frame_stack": 2,
-        "pad_frame_stack": true,
+        "seq_length": 1024,
+        "pad_seq_length": false,
+        "frame_stack": 1,
+        "pad_frame_stack": false,
         "dataset_keys": [
             "actions",
             "rewards",
@@ -62,13 +62,13 @@
         ],
         "action_config": {
             "actions": {
-                "normalization": "min_max"
+                "normalization": null
             }
         },
         "goal_mode": null,
         "cuda": true,
-        "batch_size": 64,
-        "num_epochs": 200,
+        "batch_size": 8,
+        "num_epochs": 500,
         "seed": 1,
         "max_grad_norm": null
     },
@@ -91,7 +91,7 @@
             }
         },
         "horizon": {
-            "observation_horizon": 2,
+            "observation_horizon": 1,
             "action_horizon": 8,
             "prediction_horizon": 16
         },
@@ -127,6 +127,16 @@
             "set_alpha_to_one": true,
             "steps_offset": 0,
             "prediction_type": "epsilon"
+        },
+        "transformer": {
+            "enabled": true,
+            "context_length": 1024,
+            "embed_dim": 512,
+            "num_layers": 6,
+            "num_heads": 8,
+            "emb_dropout": 0.1,
+            "attn_dropout": 0.1,
+            "block_output_dropout": 0.1
         }
     },
     "observation": {
@@ -136,7 +146,6 @@
                     "ee_pose"
                 ],
                 "rgb": [
-                    "side_camera_image",
                     "wrist_camera_image"
                 ],
                 "depth": [],

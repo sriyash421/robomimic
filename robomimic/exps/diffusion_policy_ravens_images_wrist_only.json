@@ -42,8 +42,8 @@
         "output_dir": "../diffusion_policy_ravens_trained_models",
         "normalize_weights_by_ds_size": false,
         "num_data_workers": 20,
-        "hdf5_cache_mode": "low_dim",
-        "hdf5_use_swmr": false,
+        "hdf5_cache_mode": "all",
+        "hdf5_use_swmr": true,
         "hdf5_load_next_obs": false,
         "hdf5_normalize_obs": false,
         "hdf5_filter_key": null,
@@ -136,7 +136,6 @@
                     "ee_pose"
                 ],
                 "rgb": [
-                    "side_camera_image",
                     "wrist_camera_image"
                 ],
                 "depth": [],

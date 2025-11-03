@@ -439,6 +439,7 @@ class ObservationGroupEncoder(Module):
         observation_group_shapes,
         feature_activation=nn.ReLU,
         encoder_kwargs=None,
+        return_dict=False,
     ):
         """
         Args:
@@ -483,6 +484,7 @@ class ObservationGroupEncoder(Module):
                 feature_activation=feature_activation,
                 encoder_kwargs=encoder_kwargs,
             )
+        self.return_dict = return_dict
 
     def forward(self, **inputs):
         """
@@ -506,6 +508,13 @@ class ObservationGroupEncoder(Module):
             list(inputs.keys()), list(self.observation_group_shapes.keys())
         )
 
+        if self.return_dict:
+            outputs = {}
+            for obs_group in self.observation_group_shapes:
+                # pass through encoder
+                outputs[obs_group] = self.nets[obs_group].forward(inputs[obs_group])
+            return outputs
+
         outputs = []
         # Deterministic order since self.observation_group_shapes is OrderedDict
         for obs_group in self.observation_group_shapes:
@@ -520,6 +529,12 @@ class ObservationGroupEncoder(Module):
         """
         Compute the output shape of this encoder.
         """
+        if self.return_dict:
+            output_shapes = {}
+            for obs_group in self.observation_group_shapes:
+                output_shapes[obs_group] = self.nets[obs_group].output_shape()
+            return output_shapes
+
         feat_dim = 0
         for obs_group in self.observation_group_shapes:
             # get feature dimension of these keys
@@ -534,6 +549,7 @@ class ObservationGroupEncoder(Module):
             msg += '\n'
             indent = ' ' * 4
             msg += textwrap.indent("group={}\n{}".format(k, self.nets[k]), indent)
+        header = header + '(' + "return_dict={}\n".format(self.return_dict)
         msg = header + '(' + msg + '\n)'
         return msg
 

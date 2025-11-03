@@ -42,8 +42,8 @@
         "output_dir": "../diffusion_policy_ravens_trained_models",
         "normalize_weights_by_ds_size": false,
         "num_data_workers": 20,
-        "hdf5_cache_mode": "low_dim",
-        "hdf5_use_swmr": false,
+        "hdf5_cache_mode": "all",
+        "hdf5_use_swmr": true,
         "hdf5_load_next_obs": false,
         "hdf5_normalize_obs": false,
         "hdf5_filter_key": null,
@@ -67,7 +67,7 @@
         },
         "goal_mode": null,
         "cuda": true,
-        "batch_size": 64,
+        "batch_size": 128,
         "num_epochs": 200,
         "seed": 1,
         "max_grad_norm": null
@@ -158,7 +158,14 @@
             },
             "rgb": {
                 "core_class": "VisualCore",
-                "core_kwargs": {},
+                "core_kwargs": {
+                    "input_shape": [3, 224, 224],
+                    "backbone_class": "ResNet18Conv",
+                    "backbone_kwargs": {
+                        "pretrained": true,
+                        "input_coord_conv": false
+                        }
+                    },
                 "obs_randomizer_class": null,
                 "obs_randomizer_kwargs": {}
             },

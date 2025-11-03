@@ -1,5 +1,5 @@
 *_trained_models/
-datasets/
+datasets*/
 slurm_logs
 # pip distribution folder
 dist/

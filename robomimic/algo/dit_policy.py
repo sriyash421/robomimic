@@ -27,8 +27,12 @@ import robomimic.utils.torch_utils as TorchUtils
 import robomimic.utils.tensor_utils as TensorUtils
 import robomimic.utils.obs_utils as ObsUtils
 
+# import GPT2 Transformer based policy networks
+import transformers
+from transformers import GPT2Config, GPT2Model
 
-@register_algo_factory_func("diffusion_policy")
+
+@register_algo_factory_func("dit_policy")
 def algo_config_to_class(algo_config):
     """
     Maps algo config to the BC algo class to instantiate, along with additional algo kwargs.
@@ -40,16 +44,11 @@ def algo_config_to_class(algo_config):
         algo_class: subclass of Algo
         algo_kwargs (dict): dictionary of additional kwargs to pass to algorithm
     """
-
-    if algo_config.unet.enabled:
-        return DiffusionPolicyUNet, {}
-    elif algo_config.transformer.enabled:
-        raise NotImplementedError()
-    else:
-        raise RuntimeError()
+    assert algo_config.transformer.enabled, "Enable transformer in algo config for DIT Policy"
+    return DiTPolicyUNet, {}
 
 
-class DiffusionPolicyUNet(PolicyAlgo):
+class DiTPolicyUNet(PolicyAlgo):
     def _create_networks(self):
         """
         Creates networks and places them into @self.nets.
@@ -62,25 +61,46 @@ class DiffusionPolicyUNet(PolicyAlgo):
         obs_encoder = ObsNets.ObservationGroupEncoder(
             observation_group_shapes=observation_group_shapes,
             encoder_kwargs=encoder_kwargs,
+            return_dict=False
         )
         # IMPORTANT!
         # replace all BatchNorm with GroupNorm to work with EMA
         # performance will tank if you forget to do this!
         obs_encoder = replace_bn_with_gn(obs_encoder)
         
-        obs_dim = obs_encoder.output_shape()[0]
-
+        # create projection layer
+        encoded_dim = obs_encoder.output_shape()[0]
+        projection_layer = nn.Linear(
+            in_features=encoded_dim,
+            out_features=self.algo_config.transformer.embed_dim,
+        )
+        self.context_length = self.algo_config.transformer.context_length
+        # create GPT2 transformer
+        transformer_config = GPT2Config(
+            vocab_size=1,  # we don't use vocab embeddings
+            n_positions=self.context_length,
+            n_embd=self.algo_config.transformer.embed_dim,
+            n_layer=self.algo_config.transformer.num_layers,
+            n_head=self.algo_config.transformer.num_heads,
+            resid_pdrop=self.algo_config.transformer.block_output_dropout,
+            attn_pdrop=self.algo_config.transformer.attn_dropout,
+            embd_pdrop=self.algo_config.transformer.emb_dropout,
+        )
+        transformer = GPT2Model(transformer_config)
+        
         # create network object
         noise_pred_net = DPNets.ConditionalUnet1D(
             input_dim=self.ac_dim,
-            global_cond_dim=obs_dim*self.algo_config.horizon.observation_horizon
+            global_cond_dim=self.algo_config.transformer.embed_dim,
         )
 
         # the final arch has 2 parts
         nets = nn.ModuleDict({
             "policy": nn.ModuleDict({
                 "obs_encoder": obs_encoder,
-                "noise_pred_net": noise_pred_net
+                "noise_pred_net": noise_pred_net,
+                "transformer_encoder": transformer,
+                "projection_layer": projection_layer,
             })
         })
 
@@ -120,6 +140,29 @@ class DiffusionPolicyUNet(PolicyAlgo):
         self.obs_queue = None
         self.action_queue = None
     
+    def chunk_actions(self, actions, attention_mask):
+        """
+        Convert actions from shape [B, T, Da] to [B, T, Tp, Da]
+        where Tp is the prediction horizon.
+
+        Args:
+            actions (torch.Tensor): actions of shape [B, T, Da]
+        Returns:
+            chunked_actions (torch.Tensor): actions of shape [B, T, Tp, Da]
+        """
+        Tp = self.algo_config.horizon.prediction_horizon
+        B, T, Da = actions.shape
+        base  = torch.arange(Tp, device=actions.device).view(1,1,Tp)   # (1,1,Tp)
+        start = torch.arange(T,  device=actions.device).view(1,T,1)    # (1,T,1)
+        idxs   = (start + base).expand(B, -1, -1) # (B,T,Tp)
+        lengths = attention_mask.sum(dim=1).long()  # [B]
+        # clamp idxs to be within valid lengths
+        for b in range(B):
+            idxs[b] = torch.clamp(idxs[b], max=lengths[b]-1)
+        inp = actions.unsqueeze(2).expand(B, T, Tp, Da)
+        chunked_actions = inp.gather(dim=1, index=idxs.unsqueeze(-1).expand(B, T, Tp, Da))
+        return chunked_actions
+
     def process_batch_for_training(self, batch):
         """
         Processes input batch from a data loader to filter out
@@ -133,14 +176,18 @@ class DiffusionPolicyUNet(PolicyAlgo):
             input_batch (dict): processed and filtered batch that
                 will be used for training 
         """
-        To = self.algo_config.horizon.observation_horizon
-        Ta = self.algo_config.horizon.action_horizon
+        # To = self.algo_config.horizon.observation_horizon
+        # Ta = self.algo_config.horizon.action_horizon
         Tp = self.algo_config.horizon.prediction_horizon
 
+        # input batch should contain observations, actions, attention masks
+
+
         input_batch = dict()
-        input_batch["obs"] = {k: batch["obs"][k][:, :To, :] for k in batch["obs"]}
-        input_batch["goal_obs"] = batch.get("goal_obs", None) # goals may not be present
-        input_batch["actions"] = batch["actions"][:, :Tp, :]
+        input_batch["obs"] = batch["obs"] # B x T x (xyz)
+        input_batch["actions"] = self.chunk_actions(
+            batch["actions"], batch["attention_mask"])
+        input_batch["attention_mask"] = batch["attention_mask"]
         
         # check if actions are normalized to [-1,1]
         if not self.action_check_done:
@@ -170,61 +217,83 @@ class DiffusionPolicyUNet(PolicyAlgo):
             info (dict): dictionary of relevant inputs, outputs, and losses
                 that might be relevant for logging
         """
-        To = self.algo_config.horizon.observation_horizon
-        Ta = self.algo_config.horizon.action_horizon
         Tp = self.algo_config.horizon.prediction_horizon
         action_dim = self.ac_dim
-        B = batch["actions"].shape[0]
-        
+        B,T,Tp1,_ = batch["actions"].shape
+        assert Tp1 == Tp
         
         with TorchUtils.maybe_no_grad(no_grad=validate):
-            info = super(DiffusionPolicyUNet, self).train_on_batch(batch, epoch, validate=validate)
+            info = super(DiTPolicyUNet, self).train_on_batch(batch, epoch, validate=validate)
             actions = batch["actions"]
             
             # encode obs
             inputs = {
-                "obs": batch["obs"],
-                "goal": batch["goal_obs"]
+                "obs": batch["obs"]
             }
             for k in self.obs_shapes:
                 # first two dimensions should be [B, T] for inputs
                 assert inputs["obs"][k].ndim - 2 == len(self.obs_shapes[k])
             
             if torch.cuda.device_count() > 1:
-                # when using DataParallel, need to wrap the obs_encoder call in nn.Module
                 obs_features = TensorUtils.time_distributed(
                     inputs, self.nets.module["policy"]["obs_encoder"], inputs_as_kwargs=True)
             else:
                 obs_features = TensorUtils.time_distributed(inputs, self.nets["policy"]["obs_encoder"], inputs_as_kwargs=True)
             assert obs_features.ndim == 3  # [B, T, D]
 
-            obs_cond = obs_features.flatten(start_dim=1)
-            
+            # pass through projection layer
+            if torch.cuda.device_count() > 1:
+                obs_features = self.nets["policy"].module.projection_layer(obs_features)
+            else:
+                obs_features = self.nets["policy"]["projection_layer"](obs_features)
+
+            # pass through transformer
+            attention_mask = batch["attention_mask"]
+            if torch.cuda.device_count() > 1:
+                transformer_outputs = self.nets.module["policy"]["transformer_encoder"](
+                    inputs_embeds=obs_features,
+                    attention_mask=attention_mask
+                )
+            else:
+                transformer_outputs = self.nets["policy"]["transformer_encoder"](
+                    inputs_embeds=obs_features,
+                    attention_mask=attention_mask
+                )
+            transformer_features = transformer_outputs.last_hidden_state  # [B, T, D]
+            assert transformer_features.ndim == 3  # [B, T, D]
+
+            transformer_features = transformer_features.reshape(B*T, -1)  # [B*T, D]
+            obs_cond = transformer_features  # global conditioning for diffusion
+            actions = actions.reshape(B*T, Tp, action_dim)  # [B*T, Tp, Da]
+
             # sample noise to add to actions
             noise = torch.randn(actions.shape, device=self.device)
             
             # sample a diffusion iteration for each data point
             timesteps = torch.randint(
                 0, self.noise_scheduler.config.num_train_timesteps, 
-                (B,), device=self.device
+                (B*T,), device=self.device
             ).long()
             
             # add noise to the clean actions according to the noise magnitude at each diffusion iteration
             # (this is the forward diffusion process)
             noisy_actions = self.noise_scheduler.add_noise(
-                actions, noise, timesteps)
+                actions, noise, timesteps) # [B*T, Tp, Da]
             
             # predict the noise residual
             if torch.cuda.device_count() > 1:
-                # when using DataParallel, need to wrap the noise_pred_net call in nn.Module
                 noise_pred = self.nets.module["policy"]["noise_pred_net"](
-                    noisy_actions, timesteps, global_cond=obs_cond)
+                    noisy_actions, timesteps, global_cond=obs_cond) # [B*T, Tp, Da]
             else:
                 noise_pred = self.nets["policy"]["noise_pred_net"](
-                    noisy_actions, timesteps, global_cond=obs_cond)
+                    noisy_actions, timesteps, global_cond=obs_cond) # [B*T, Tp, Da]
             
             # L2 loss
-            loss = F.mse_loss(noise_pred, noise)
+            loss = F.mse_loss(noise_pred, noise, reduction="none") # [B*T, Tp, Da]
+            loss = loss.mean(dim=-1)  # [B*T, Tp]
+            loss = loss.mean(dim=-1)  # [B*T]
+            loss = loss * attention_mask.reshape(B*T)  # [B*T]
+            loss = loss.sum() / attention_mask.sum()  # scalar
             
             # logging
             losses = {
@@ -262,7 +331,7 @@ class DiffusionPolicyUNet(PolicyAlgo):
         Returns:
             loss_log (dict): name -> summary statistic
         """
-        log = super(DiffusionPolicyUNet, self).log_info(info)
+        log = super(DiTPolicyUNet, self).log_info(info)
         log["Loss"] = info["losses"]["l2_loss"].item()
         if "policy_grad_norms" in info:
             log["Policy_Grad_Norms"] = info["policy_grad_norms"]
@@ -273,9 +342,8 @@ class DiffusionPolicyUNet(PolicyAlgo):
         Reset algo state to prepare for environment rollouts.
         """
         # setup inference queues
-        To = self.algo_config.horizon.observation_horizon
         Ta = self.algo_config.horizon.action_horizon
-        obs_queue = deque(maxlen=To)
+        obs_queue = deque(maxlen=self.context_length)
         action_queue = deque(maxlen=Ta)
         self.obs_queue = obs_queue
         self.action_queue = action_queue
@@ -292,13 +360,13 @@ class DiffusionPolicyUNet(PolicyAlgo):
             action (torch.Tensor): action tensor [1, Da]
         """
         # obs_dict: key: [1,D]
-        To = self.algo_config.horizon.observation_horizon
         Ta = self.algo_config.horizon.action_horizon
+        self.obs_queue.append(obs_dict)
         
         if len(self.action_queue) == 0:
             # no actions left, run inference
             # [1,T,Da]
-            action_sequence = self._get_action_trajectory(obs_dict=obs_dict)
+            action_sequence = self._get_action_trajectory()
             
             # put actions into the queue
             self.action_queue.extend(action_sequence[0])
@@ -311,9 +379,9 @@ class DiffusionPolicyUNet(PolicyAlgo):
         action = action.unsqueeze(0)
         return action
         
-    def _get_action_trajectory(self, obs_dict, goal_dict=None):
+    def _get_action_trajectory(self):
         assert not self.nets.training
-        To = self.algo_config.horizon.observation_horizon
+        # To = self.algo_config.horizon.observation_horizon
         Ta = self.algo_config.horizon.action_horizon
         Tp = self.algo_config.horizon.prediction_horizon
         action_dim = self.ac_dim
@@ -329,10 +397,15 @@ class DiffusionPolicyUNet(PolicyAlgo):
         if self.ema is not None:
             nets = self.ema.averaged_model
         
+        # convert obs queue to batch
+        obs_list = list(self.obs_queue)
+        obs_dict = dict()
+        for k in obs_list[0]:
+            obs_dict[k] = torch.cat([ obs_list[i][k].unsqueeze(1) for i in range(len(obs_list)) ], dim=1)  # [1,T,Do]
+
         # encode obs
         inputs = {
-            "obs": obs_dict,
-            "goal": goal_dict
+            "obs": obs_dict
         }
         for k in self.obs_shapes:
             # first two dimensions should be [B, T] for inputs
@@ -345,8 +418,19 @@ class DiffusionPolicyUNet(PolicyAlgo):
         assert obs_features.ndim == 3  # [B, T, D]
         B = obs_features.shape[0]
 
-        # reshape observation to (B,obs_horizon*obs_dim)
-        obs_cond = obs_features.flatten(start_dim=1)
+        # pass through projection layer
+        obs_features = nets["policy"]["projection_layer"](obs_features)
+
+        # pass through transformer
+        attention_mask = torch.ones((B, obs_features.shape[1]), device=obs_features.device)
+        transformer_outputs = nets["policy"]["transformer_encoder"](
+            inputs_embeds=obs_features,
+            attention_mask=attention_mask
+        )
+        transformer_features = transformer_outputs.last_hidden_state  # [B, T, D]
+        assert transformer_features.ndim == 3  # [B, T, D]
+
+        obs_cond = transformer_features[:, -1, :].reshape(B, -1)  # [B, D], only use last feature for conditioning
 
         # initialize action from Guassian noise
         noisy_action = torch.randn(
@@ -372,9 +456,7 @@ class DiffusionPolicyUNet(PolicyAlgo):
             ).prev_sample
 
         # process action using Ta
-        start = To - 1
-        end = start + Ta
-        action = naction[:,start:end]
+        action = naction[:,:Ta]
         return action
 
     def serialize(self):
