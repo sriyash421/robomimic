@@ -424,6 +424,8 @@ def policy_from_checkpoint(device=None, ckpt_path=None, ckpt_dict=None, verbose=
         device = TorchUtils.get_torch_device(try_to_use_cuda=config.train.cuda)
 
     # create model and load weights
+    if isinstance(shape_meta, list):
+        shape_meta = shape_meta[0]  # backwards compatibility for old checkpoints
     model = algo_factory(
         algo_name,
         config,

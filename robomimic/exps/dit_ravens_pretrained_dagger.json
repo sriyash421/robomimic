@@ -27,7 +27,7 @@
         "keep_all_videos": false,
         "video_skip": 5,
         "rollout": {
-            "enabled": true,
+            "enabled": false,
             "n": 50,
             "horizon": 400,
             "rate": 50,
@@ -41,8 +41,8 @@
         "data": null,
         "output_dir": "../dit_policy_trained_models",
         "normalize_weights_by_ds_size": false,
-        "num_data_workers": 0,
-        "hdf5_cache_mode": "all",
+        "num_data_workers": 48,
+        "hdf5_cache_mode": "low_dim",
         "hdf5_use_swmr": true,
         "hdf5_load_next_obs": false,
         "hdf5_normalize_obs": false,
@@ -55,7 +55,8 @@
         "dataset_keys": [
             "actions",
             "rewards",
-            "dones"
+            "dones",
+            "expert_mask"
         ],
         "action_keys": [
             "actions"
@@ -68,7 +69,7 @@
         "goal_mode": null,
         "cuda": true,
         "batch_size": 8,
-        "num_epochs": 1000,
+        "num_epochs": 500,
         "seed": 1,
         "max_grad_norm": null
     },
@@ -92,8 +93,8 @@
         },
         "horizon": {
             "observation_horizon": 1,
-            "action_horizon": 8,
-            "prediction_horizon": 16
+            "action_horizon": 4,
+            "prediction_horizon": 8
         },
         "unet": {
             "enabled": true,
@@ -131,9 +132,9 @@
         "transformer": {
             "enabled": true,
             "context_length": 1024,
-            "embed_dim": 512,
-            "num_layers": 6,
-            "num_heads": 8,
+            "embed_dim": 256,
+            "num_layers": 4,
+            "num_heads": 4,
             "emb_dropout": 0.1,
             "attn_dropout": 0.1,
             "block_output_dropout": 0.1
@@ -143,13 +144,11 @@
         "modalities": {
             "obs": {
                 "low_dim": [
-                    "robot0_eef_pos",
-                    "robot0_eef_quat",
-                    "robot0_gripper_qpos"
+                    "ee_pose",
+                    "prev_action"
                 ],
                 "rgb": [
-                    "agentview_image",
-                    "robot0_eye_in_hand_image"
+                    "wrist_camera_image"
                 ],
                 "depth": [],
                 "scan": []
@@ -170,7 +169,14 @@
             },
             "rgb": {
                 "core_class": "VisualCore",
-                "core_kwargs": {},
+                "core_kwargs": {
+                    "input_shape": [3, 224, 224],
+                    "backbone_class": "ResNet18Conv",
+                    "backbone_kwargs": {
+                        "pretrained": true,
+                        "input_coord_conv": false
+                        }
+                    },
                 "obs_randomizer_class": null,
                 "obs_randomizer_kwargs": {}
             },

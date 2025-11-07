@@ -41,14 +41,14 @@
         "data": null,
         "output_dir": "../diffusion_policy_ravens_trained_models",
         "normalize_weights_by_ds_size": false,
-        "num_data_workers": 0,
+        "num_data_workers": 48,
         "hdf5_cache_mode": "all",
         "hdf5_use_swmr": true,
         "hdf5_load_next_obs": false,
         "hdf5_normalize_obs": false,
         "hdf5_filter_key": null,
         "hdf5_validation_filter_key": null,
-        "seq_length": 16,
+        "seq_length": 8,
         "pad_seq_length": true,
         "frame_stack": 2,
         "pad_frame_stack": true,
@@ -92,8 +92,8 @@
         },
         "horizon": {
             "observation_horizon": 2,
-            "action_horizon": 8,
-            "prediction_horizon": 16
+            "action_horizon": 4,
+            "prediction_horizon": 8
         },
         "unet": {
             "enabled": true,
@@ -136,7 +136,7 @@
                     "ee_pose",
                     "obj_pose",
                     "goal_pose",
-		    "grasp"
+		            "grasp"
                 ],
                 "rgb": [],
                 "depth": [],

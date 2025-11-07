@@ -78,6 +78,7 @@ def train(config, device, resume=False):
         # if only a single dataset is provided, convert to list
         with config.values_unlocked():
             config.train.data = [{"path": config.train.data}]
+            
     for dataset_cfg in config.train.data:
         dataset_path = os.path.expanduser(dataset_cfg["path"])
         if not os.path.exists(dataset_path):
@@ -182,7 +183,8 @@ def train(config, device, resume=False):
         shuffle=(train_sampler is None),
         num_workers=config.train.num_data_workers,
         drop_last=True,
-        collate_fn=TorchUtils.collate_fn if config.algo_name == "dit_policy" else None
+        collate_fn=TorchUtils.collate_fn if config.algo_name == "dit_policy" else None,
+        prefetch_factor=8 if config.train.num_data_workers > 0 else None,
     )
 
     if config.experiment.validate:
@@ -477,10 +479,16 @@ def main(args):
         config = config_factory(args.algo)
 
     if args.dataset is not None:
-        config.train.data = [{"path": args.dataset}]
+        if isinstance(args.dataset, list):
+            config.train.data = [{"path": p} for p in args.dataset]
+        else:
+            config.train.data = [{"path": args.dataset}]
 
     if args.name is not None:
         config.experiment.name = args.name
+    
+    if args.pretrained_ckpt is not None:
+        config.experiment.ckpt_path = args.pretrained_ckpt
 
     # get torch device
     device = TorchUtils.get_torch_device(try_to_use_cuda=config.train.cuda)
@@ -547,6 +555,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset",
         type=str,
+        nargs="+",
         default=None,
         help="(optional) if provided, override the dataset path defined in the config",
     )
@@ -563,6 +572,13 @@ if __name__ == "__main__":
         "--resume",
         action='store_true',
         help="set this flag to resume training from latest checkpoint",
+    )
+
+    parser.add_argument(
+        '--pretrained_ckpt',
+        type=str,
+        default=None,
+        help="path to pretrained ckpt"
     )
 
     args = parser.parse_args()

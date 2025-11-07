@@ -329,7 +329,8 @@ class SequenceDataset(torch.utils.data.Dataset):
                 if k in hdf5_file["data/{}".format(ep)]:
                     all_data[ep][k] = hdf5_file["data/{}/{}".format(ep, k)][()].astype('float32')
                 else:
-                    all_data[ep][k] = np.zeros((all_data[ep]["attrs"]["num_samples"], 1), dtype=np.float32)
+                    # all_data[ep][k] = np.zeros((all_data[ep]["attrs"]["num_samples"], 1), dtype=np.float32)
+                    assert False, f"key {k} not found in hdf5 dataset!"
 
             if "model_file" in hdf5_file["data/{}".format(ep)].attrs:
                 all_data[ep]["attrs"]["model_file"] = hdf5_file["data/{}".format(ep)].attrs["model_file"]

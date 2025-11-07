@@ -140,7 +140,7 @@ class DiTPolicyUNet(PolicyAlgo):
         self.obs_queue = None
         self.action_queue = None
     
-    def chunk_actions(self, actions, attention_mask):
+    def chunk_actions(self, actions, expert_mask, attention_mask):
         """
         Convert actions from shape [B, T, Da] to [B, T, Tp, Da]
         where Tp is the prediction horizon.
@@ -160,8 +160,10 @@ class DiTPolicyUNet(PolicyAlgo):
         for b in range(B):
             idxs[b] = torch.clamp(idxs[b], max=lengths[b]-1)
         inp = actions.unsqueeze(2).expand(B, T, Tp, Da)
+        expert_mask = expert_mask.view(B, T, 1).expand(B, T, Tp)
         chunked_actions = inp.gather(dim=1, index=idxs.unsqueeze(-1).expand(B, T, Tp, Da))
-        return chunked_actions
+        chunked_expert_mask = expert_mask.gather(dim=1, index=idxs) # [B, T, Tp]
+        return chunked_actions, chunked_expert_mask
 
     def process_batch_for_training(self, batch):
         """
@@ -185,8 +187,10 @@ class DiTPolicyUNet(PolicyAlgo):
 
         input_batch = dict()
         input_batch["obs"] = batch["obs"] # B x T x (xyz)
-        input_batch["actions"] = self.chunk_actions(
-            batch["actions"], batch["attention_mask"])
+        actions, expert_mask = self.chunk_actions(
+            batch["actions"], batch["expert_mask"], batch["attention_mask"])
+        input_batch["actions"] = actions  # B x T x Tp x Da
+        input_batch["expert_mask"] = expert_mask  # B x T x Tp
         input_batch["attention_mask"] = batch["attention_mask"]
         
         # check if actions are normalized to [-1,1]
@@ -288,10 +292,13 @@ class DiTPolicyUNet(PolicyAlgo):
                 noise_pred = self.nets["policy"]["noise_pred_net"](
                     noisy_actions, timesteps, global_cond=obs_cond) # [B*T, Tp, Da]
             
+            loss_mask = batch["expert_mask"].reshape(B*T, Tp)  # [B*T, Tp]
             # L2 loss
             loss = F.mse_loss(noise_pred, noise, reduction="none") # [B*T, Tp, Da]
             loss = loss.mean(dim=-1)  # [B*T, Tp]
-            loss = loss.mean(dim=-1)  # [B*T]
+            loss = loss * loss_mask  # [B*T, Tp]
+            loss = loss.sum(dim=-1) / (loss_mask.sum(dim=-1) + 1e-8)  # [B*T]
+            # loss = loss.mean(dim=-1)  # [B*T]
             loss = loss * attention_mask.reshape(B*T)  # [B*T]
             loss = loss.sum() / attention_mask.sum()  # scalar
             
