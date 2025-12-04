@@ -41,7 +41,7 @@
         "data": null,
         "output_dir": "../diffusion_policy_ravens_trained_models",
         "normalize_weights_by_ds_size": false,
-        "num_data_workers": 20,
+        "num_data_workers": 48,
         "hdf5_cache_mode": "all",
         "hdf5_use_swmr": true,
         "hdf5_load_next_obs": false,
@@ -55,7 +55,8 @@
         "dataset_keys": [
             "actions",
             "rewards",
-            "dones"
+            "dones",
+            "expert_mask"
         ],
         "action_keys": [
             "actions"
@@ -133,7 +134,8 @@
         "modalities": {
             "obs": {
                 "low_dim": [
-                    "ee_pose"
+                    "ee_pose",
+                    "prev_action"
                 ],
                 "rgb": [
                     "side_camera_image",

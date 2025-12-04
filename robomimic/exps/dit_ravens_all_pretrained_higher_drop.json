@@ -6,8 +6,8 @@
         "logging": {
             "terminal_output_to_txt": true,
             "log_tb": true,
-            "log_wandb": false,
-            "wandb_proj_name": "debug"
+            "log_wandb": true,
+            "wandb_proj_name": "ravens-dit-training"
         },
         "save": {
             "enabled": true,
@@ -69,7 +69,7 @@
         "goal_mode": null,
         "cuda": true,
         "batch_size": 16,
-        "num_epochs": 2000,
+        "num_epochs": 1000,
         "seed": 1,
         "max_grad_norm": null
     },
@@ -112,7 +112,7 @@
             "power": 0.75
         },
         "ddpm": {
-            "enabled": false,
+            "enabled": true,
             "num_train_timesteps": 100,
             "num_inference_timesteps": 100,
             "beta_schedule": "squaredcos_cap_v2",
@@ -120,7 +120,7 @@
             "prediction_type": "epsilon"
         },
         "ddim": {
-            "enabled": true,
+            "enabled": false,
             "num_train_timesteps": 100,
             "num_inference_timesteps": 10,
             "beta_schedule": "squaredcos_cap_v2",
@@ -136,7 +136,7 @@
             "num_layers": 4,
             "num_heads": 4,
             "emb_dropout": 0.1,
-            "attn_dropout": 0.1,
+            "attn_dropout": 0.5,
             "block_output_dropout": 0.1
         }
     },
@@ -148,7 +148,8 @@
                     "prev_action"
                 ],
                 "rgb": [
-                    "wrist_camera_image"
+                    "wrist_camera_image",
+                    "side_camera_image"
                 ],
                 "depth": [],
                 "scan": []

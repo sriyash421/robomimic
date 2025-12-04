@@ -726,8 +726,13 @@ def collate_fn(batch, add_attn_mask=True):
                 values = torch.tensor(values, dtype=torch.long)
             else:
                 values = [torch.tensor(v) for v in values]
+                # try:
                 collated_batch[key] = torch.nn.utils.rnn.pad_sequence(
                     values, batch_first=True, padding_value=0.0)
+                # except:
+                #     print("Error collating key:", key)
+                #     print("Values:", [v.shape for v in values])
+                #     raise NotImplementedError
     if add_attn_mask:
         # use actions key to determine sequence lengths
         seq_lens = [item['actions'].shape[0] for item in batch]

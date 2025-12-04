@@ -139,6 +139,7 @@ class DiTPolicyUNet(PolicyAlgo):
         self.action_check_done = False
         self.obs_queue = None
         self.action_queue = None
+        self.upweight_gripper_loss = False
     
     def chunk_actions(self, actions, expert_mask, attention_mask):
         """
@@ -297,6 +298,15 @@ class DiTPolicyUNet(PolicyAlgo):
             loss = F.mse_loss(noise_pred, noise, reduction="none") # [B*T, Tp, Da]
             loss = loss.mean(dim=-1)  # [B*T, Tp]
             loss = loss * loss_mask  # [B*T, Tp]
+
+            ## upweight loss for gripper action = 1
+            if self.upweight_gripper_loss:
+                gripper_indices = list(range(action_dim-1, action_dim))
+                gripper_actions = actions[:,:,gripper_indices]  # [B*T, Tp, 1]
+                gripper_mask = (torch.abs(gripper_actions) > 0.5).float().squeeze(-1)  # [B*T, Tp]
+                gripper_weight = 5.0
+                loss = loss * (1.0 + (gripper_weight - 1.0) * gripper_mask)
+
             loss = loss.sum(dim=-1) / (loss_mask.sum(dim=-1) + 1e-8)  # [B*T]
             # loss = loss.mean(dim=-1)  # [B*T]
             loss = loss * attention_mask.reshape(B*T)  # [B*T]
@@ -374,6 +384,7 @@ class DiTPolicyUNet(PolicyAlgo):
             # no actions left, run inference
             # [1,T,Da]
             action_sequence = self._get_action_trajectory()
+            assert action_sequence.shape[1] == Ta
             
             # put actions into the queue
             self.action_queue.extend(action_sequence[0])
