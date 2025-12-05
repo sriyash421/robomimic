@@ -511,12 +511,12 @@ class RolloutPolicy(object):
         self.obs_normalization_stats = obs_normalization_stats
         self.action_normalization_stats = action_normalization_stats
 
-    def start_episode(self):
+    def start_episode(self, resets):
         """
         Prepare the policy to start a new rollout.
         """
         self.policy.set_eval()
-        self.policy.reset()
+        self.policy.reset(resets)
 
     def _prepare_observation(self, ob, batched_ob=False, postprocess_visual_obs=True):
         """

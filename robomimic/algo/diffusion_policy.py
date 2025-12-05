@@ -27,6 +27,7 @@ import robomimic.utils.torch_utils as TorchUtils
 import robomimic.utils.tensor_utils as TensorUtils
 import robomimic.utils.obs_utils as ObsUtils
 
+from icl_exploration.utils.common import stack_dicts_torch
 
 @register_algo_factory_func("diffusion_policy")
 def algo_config_to_class(algo_config):
@@ -268,17 +269,30 @@ class DiffusionPolicyUNet(PolicyAlgo):
             log["Policy_Grad_Norms"] = info["policy_grad_norms"]
         return log
     
-    def reset(self):
+    def reset(self, resets):
         """
         Reset algo state to prepare for environment rollouts.
+
+        Args:
+            resets: 1D boolean-like array / list of length B indicating which envs
+                have just been reset.
         """
-        # setup inference queues
         To = self.algo_config.horizon.observation_horizon
         Ta = self.algo_config.horizon.action_horizon
-        obs_queue = deque(maxlen=To)
-        action_queue = deque(maxlen=Ta)
-        self.obs_queue = obs_queue
-        self.action_queue = action_queue
+        B = len(resets)
+
+        if self.obs_queue is None:
+            self.obs_queue = [deque(maxlen=To) for _ in range(B)]
+            self.action_queue = [deque(maxlen=Ta) for _ in range(B)]
+
+        resets = torch.as_tensor(resets, dtype=torch.bool).cpu().numpy()
+        B = resets.shape[0]
+
+        # clear queues for envs that reset
+        for i in range(B):
+            if resets[i]:
+                self.obs_queue[i].clear()
+                self.action_queue[i].clear()
     
     def get_action(self, obs_dict, goal_dict=None):
         """
@@ -294,21 +308,28 @@ class DiffusionPolicyUNet(PolicyAlgo):
         # obs_dict: key: [1,D]
         To = self.algo_config.horizon.observation_horizon
         Ta = self.algo_config.horizon.action_horizon
+        B = obs_dict[next(iter(obs_dict.keys()))].shape[0]
+        obs_reset_idxs = [i for i in range(B) if len(self.obs_queue[i]) == 0]
+        for i in obs_reset_idxs:
+            obs = {k: obs_dict[k][i].detach().clone() for k in obs_dict.keys()}
+            self.obs_queue[i].extend([obs]*To)
+
+        for i in range(B):
+            self.obs_queue[i].append({k: obs_dict[k][i].detach().clone() for k in obs_dict.keys()})
+
+        action_reset_idxs = [i for i in range(B) if len(self.action_queue[i]) == 0]
+        if len(action_reset_idxs) > 0:
+            obs_input = [stack_dicts_torch(self.obs_queue[i]) for i in action_reset_idxs]
+            obs_input = stack_dicts_torch(obs_input)
+            action_sequence = self._get_action_trajectory(
+                obs_dict=obs_input,
+                goal_dict=None,
+            )
+            for idx, i in enumerate(action_reset_idxs):
+                self.action_queue[i].extend(action_sequence[idx])
         
-        if len(self.action_queue) == 0:
-            # no actions left, run inference
-            # [1,T,Da]
-            action_sequence = self._get_action_trajectory(obs_dict=obs_dict)
-            
-            # put actions into the queue
-            self.action_queue.extend(action_sequence[0])
-        
-        # has action, execute from left to right
-        # [Da]
-        action = self.action_queue.popleft()
-        
-        # [1,Da]
-        action = action.unsqueeze(0)
+        actions = [aq.popleft() for aq in self.action_queue]
+        action = torch.stack(actions, dim=0)
         return action
         
     def _get_action_trajectory(self, obs_dict, goal_dict=None):

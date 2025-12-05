@@ -27,6 +27,7 @@ from robomimic.envs.env_base import EnvBase
 from robomimic.envs.wrappers import EnvWrapper
 from robomimic.algo import RolloutPolicy
 
+from icl_exploration.utils.image_utils import VideoWriter
 
 def get_exp_dir(config, auto_remove_exp_dir=False, resume=False):
     """
@@ -308,10 +309,10 @@ def run_rollout(
         results (dict): dictionary containing return, success rate, etc.
     """
     assert isinstance(policy, RolloutPolicy)
-    assert isinstance(env, EnvBase) or isinstance(env, EnvWrapper)
-
-    policy.start_episode()
-
+    # assert isinstance(env, EnvBase) or isinstance(env, EnvWrapper)
+    n_envs = env.num_envs
+    resets = np.ones((n_envs,), dtype=bool)
+    policy.start_episode(resets)
     ob_dict = env.reset()
     goal_dict = None
     if use_goals:
@@ -319,20 +320,18 @@ def run_rollout(
         goal_dict = env.get_goal()
 
     results = {}
-    video_count = 0  # video frame counter
 
     rews = []
-    success = None # success metrics
-
+    assert n_envs == 1, "only single environment rollouts supported for now"
     end_step = None
 
     video_frames = []
-    
+    actions = []
     try:
         for step_i in range(horizon):
             # get action from policy
             policy_ob = ob_dict
-            ac = policy(ob=policy_ob, goal=goal_dict)
+            ac = policy(ob=policy_ob, goal=goal_dict, batched_ob=True)
 
             # play action
             ob_dict, r, done, _ = env.step(ac)
@@ -342,48 +341,45 @@ def run_rollout(
                 env.render(mode="human")
 
             # compute reward
-            rews.append(r)
+            rews.append(r[0])
+            actions.append(ac[0])
 
-            cur_success_metrics = env.is_success()
+            # cur_success_metrics = env.is_success()
 
-            if success is None:
-                success = deepcopy(cur_success_metrics)
-            else:
-                for k in success:
-                    success[k] = success[k] | cur_success_metrics[k]
+            # if success is None:
+            #     success = deepcopy(cur_success_metrics)
+            # else:
+            #     for k in success:
+            #         success[k] = success[k] | cur_success_metrics[k]
 
             # visualization
             if video_writer is not None:
-                if video_count % video_skip == 0:
-                    frame = env.render(mode="rgb_array", height=512, width=512)
-                    video_frames.append(frame)
-
-                video_count += 1
+                frame = env.render()
+                video_frames.append(frame)
 
             # break if done
-            if done or (terminate_on_success and success["task"]):
+            if done[0]:  #or (terminate_on_success and success["task"]):
                 end_step = step_i
                 break
 
-    except env.rollout_exceptions as e:
+    except Exception as e:
         print("WARNING: got rollout exception {}".format(e))
 
 
     if video_writer is not None:
-        for frame in video_frames:
-            video_writer.append_data(frame)
+        video_writer.save(video_frames, actions, rews)
 
     end_step = end_step or step_i
     total_reward = np.sum(rews[:end_step + 1])
     
     results["Return"] = total_reward
     results["Horizon"] = end_step + 1
-    results["Success_Rate"] = float(success["task"])
+    results["Success_Rate"] = float(total_reward > 0.99)
 
     # log additional success metrics
-    for k in success:
-        if k != "task":
-            results["{}_Success_Rate".format(k)] = float(success[k])
+    # for k in success:
+    #     if k != "task":
+    #         results["{}_Success_Rate".format(k)] = float(success[k])
 
     return results
 
@@ -453,13 +449,15 @@ def rollout_with_stats(
     if video_path is not None:
         # a single video is written for all envs
         video_paths = { k : video_path for k in envs }
-        video_writer = imageio.get_writer(video_path, fps=20)
+        # video_writer = imageio.get_writer(video_path, fps=20)
+        video_writer = VideoWriter(video_path, fps=5)
         video_writers = { k : video_writer for k in envs }
     if video_dir is not None:
         # video is written per env
         video_str = "_epoch_{}.mp4".format(epoch) if epoch is not None else ".mp4" 
         video_paths = { k : os.path.join(video_dir, "{}{}".format(k, video_str)) for k in envs }
-        video_writers = { k : imageio.get_writer(video_paths[k], fps=20) for k in envs }
+        # video_writers = { k : imageio.get_writer(video_paths[k], fps=20) for k in envs }
+        video_writers = { k : VideoWriter(video_paths[k], fps=5) for k in envs }
 
     for env_key, env in envs.items():
         env_video_writer = None
@@ -467,7 +465,7 @@ def rollout_with_stats(
             print("video writes to " + video_paths[env_key])
             env_video_writer = video_writers[env_key]
 
-        env_name = env.name
+        env_name = env_key
 
         print("rollout: env={}, horizon={}, use_goals={}, num_episodes={}".format(
             env_name, horizon, use_goals, num_episodes,
@@ -493,7 +491,8 @@ def rollout_with_stats(
             rollout_info["time"] = time.time() - rollout_timestamp
 
             rollout_logs.append(rollout_info)
-            num_success += rollout_info["Success_Rate"]
+            # num_success += rollout_info["Success_Rate"]
+            num_success += int(rollout_info["Return"] > 0.99)  # consider success if return > 0
             
             if verbose:
                 print("Episode {}, horizon={}, num_success={}".format(ep_i + 1, horizon, num_success))
