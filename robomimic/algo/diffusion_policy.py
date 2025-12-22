@@ -191,12 +191,12 @@ class DiffusionPolicyUNet(PolicyAlgo):
                 # first two dimensions should be [B, T] for inputs
                 assert inputs["obs"][k].ndim - 2 == len(self.obs_shapes[k])
             
-            if torch.cuda.device_count() > 1:
-                # when using DataParallel, need to wrap the obs_encoder call in nn.Module
-                obs_features = TensorUtils.time_distributed(
-                    inputs, self.nets.module["policy"]["obs_encoder"], inputs_as_kwargs=True)
-            else:
-                obs_features = TensorUtils.time_distributed(inputs, self.nets["policy"]["obs_encoder"], inputs_as_kwargs=True)
+            # if torch.cuda.device_count() > 1:
+            #     # when using DataParallel, need to wrap the obs_encoder call in nn.Module
+            #     obs_features = TensorUtils.time_distributed(
+            #         inputs, self.nets.module["policy"]["obs_encoder"], inputs_as_kwargs=True)
+            # else:
+            obs_features = TensorUtils.time_distributed(inputs, self.nets["policy"]["obs_encoder"], inputs_as_kwargs=True)
             assert obs_features.ndim == 3  # [B, T, D]
 
             obs_cond = obs_features.flatten(start_dim=1)
@@ -216,13 +216,13 @@ class DiffusionPolicyUNet(PolicyAlgo):
                 actions, noise, timesteps)
             
             # predict the noise residual
-            if torch.cuda.device_count() > 1:
-                # when using DataParallel, need to wrap the noise_pred_net call in nn.Module
-                noise_pred = self.nets.module["policy"]["noise_pred_net"](
-                    noisy_actions, timesteps, global_cond=obs_cond)
-            else:
-                noise_pred = self.nets["policy"]["noise_pred_net"](
-                    noisy_actions, timesteps, global_cond=obs_cond)
+            # if torch.cuda.device_count() > 1:
+            #     # when using DataParallel, need to wrap the noise_pred_net call in nn.Module
+            #     noise_pred = self.nets.module["policy"]["noise_pred_net"](
+            #         noisy_actions, timesteps, global_cond=obs_cond)
+            # else:
+            noise_pred = self.nets["policy"]["noise_pred_net"](
+                noisy_actions, timesteps, global_cond=obs_cond)
             
             # L2 loss
             loss = F.mse_loss(noise_pred, noise)

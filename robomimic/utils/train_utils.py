@@ -187,7 +187,7 @@ def dataset_factory(config, obs_keys, filter_by_attribute=None, dataset_path=Non
         hdf5_use_swmr=config.train.hdf5_use_swmr,
         hdf5_normalize_obs=config.train.hdf5_normalize_obs,
         filter_by_attribute=filter_by_attribute,
-        seq_only=config.algo_name == "dit_policy" or config.algo.transformer.enabled
+        seq_only=config.algo_name == "dit_policy" or config.algo.get("transformer", {}).get("enabled", False),
     )
 
     ds_kwargs["hdf5_path"] = [ds_cfg["path"] for ds_cfg in config.train.data]
