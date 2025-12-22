@@ -28,6 +28,7 @@ from robomimic.envs.wrappers import EnvWrapper
 from robomimic.algo import RolloutPolicy
 
 from icl_exploration.utils.image_utils import VideoWriter
+from icl_exploration.utils.common import stack_dicts
 
 def get_exp_dir(config, auto_remove_exp_dir=False, resume=False):
     """
@@ -58,12 +59,12 @@ def get_exp_dir(config, auto_remove_exp_dir=False, resume=False):
     if not os.path.isabs(base_output_dir):
         # relative paths are specified relative to robomimic module location
         base_output_dir = os.path.join(robomimic.__path__[0], base_output_dir)
-    base_output_dir = os.path.join(base_output_dir, config.experiment.name)
+    base_output_dir = os.path.join(base_output_dir, config.experiment.name, time_str)
     if resume:
         assert os.path.exists(base_output_dir), "Resuming training run, but output dir {} does not exist".format(base_output_dir)
         subdir_lst = os.listdir(base_output_dir)
-        time_str = sorted(subdir_lst)[-1]  # get the most recent subdirectory
-        assert os.path.isdir(os.path.join(base_output_dir, time_str)), "Found item {} that is not a subdirectory in {}".format(time_str, base_output_dir)
+        folder = sorted(subdir_lst)[-1]  # get the most recent subdirectory
+        assert os.path.isdir(base_output_dir), "Found item {} that is not a subdirectory in {}".format(folder, base_output_dir)
     elif os.path.exists(base_output_dir):
         if not auto_remove_exp_dir:
             ans = input("WARNING: model directory ({}) already exists! \noverwrite? (y/n)\n".format(base_output_dir))
@@ -76,18 +77,18 @@ def get_exp_dir(config, auto_remove_exp_dir=False, resume=False):
     # only make model directory if model saving is enabled
     output_dir = None
     if config.experiment.save.enabled:
-        output_dir = os.path.join(base_output_dir, time_str, "models")
+        output_dir = os.path.join(base_output_dir, "models")
         os.makedirs(output_dir, exist_ok=resume)
 
     # tensorboard directory
-    log_dir = os.path.join(base_output_dir, time_str, "logs")
+    log_dir = os.path.join(base_output_dir, "logs")
     os.makedirs(log_dir, exist_ok=resume)
 
     # video directory
-    video_dir = os.path.join(base_output_dir, time_str, "videos")
+    video_dir = os.path.join(base_output_dir, "videos")
     os.makedirs(video_dir, exist_ok=resume)
 
-    time_dir = os.path.join(base_output_dir, time_str)
+    time_dir = os.path.join(base_output_dir)
     
     return log_dir, output_dir, video_dir, time_dir
 
@@ -186,7 +187,7 @@ def dataset_factory(config, obs_keys, filter_by_attribute=None, dataset_path=Non
         hdf5_use_swmr=config.train.hdf5_use_swmr,
         hdf5_normalize_obs=config.train.hdf5_normalize_obs,
         filter_by_attribute=filter_by_attribute,
-        seq_only=config.algo_name == "dit_policy"
+        seq_only=config.algo_name == "dit_policy" or config.algo.transformer.enabled
     )
 
     ds_kwargs["hdf5_path"] = [ds_cfg["path"] for ds_cfg in config.train.data]
@@ -327,44 +328,46 @@ def run_rollout(
 
     video_frames = []
     actions = []
-    try:
-        for step_i in range(horizon):
-            # get action from policy
-            policy_ob = ob_dict
-            ac = policy(ob=policy_ob, goal=goal_dict, batched_ob=True)
+    # try:
+    for step_i in range(horizon):
+        # get action from policy
+        # print(f"Step i: {step_i}")
+        policy_ob = ob_dict
+        if not isinstance(policy_ob, dict):
+            policy_ob = stack_dicts(policy_ob)
+        ac = policy(ob=policy_ob, goal=goal_dict, batched_ob=True)
 
-            # play action
-            ob_dict, r, done, _ = env.step(ac)
+        # play action
+        ob_dict, r, done, _ = env.step(ac)
 
-            # render to screen
-            if render:
-                env.render(mode="human")
+        # render to screen
+        if render:
+            env.render(mode="human")
 
-            # compute reward
-            rews.append(r[0])
-            actions.append(ac[0])
+        # compute reward
+        rews.append(r[0])
+        actions.append(ac[0])
 
-            # cur_success_metrics = env.is_success()
+        # cur_success_metrics = env.is_success()
 
-            # if success is None:
-            #     success = deepcopy(cur_success_metrics)
-            # else:
-            #     for k in success:
-            #         success[k] = success[k] | cur_success_metrics[k]
+        # if success is None:
+        #     success = deepcopy(cur_success_metrics)
+        # else:
+        #     for k in success:
+        #         success[k] = success[k] | cur_success_metrics[k]
 
-            # visualization
-            if video_writer is not None:
-                frame = env.render()
-                video_frames.append(frame)
+        # visualization
+        if video_writer is not None:
+            frame = env.render()
+            video_frames.append(frame)
 
-            # break if done
-            if done[0]:  #or (terminate_on_success and success["task"]):
-                end_step = step_i
-                break
+        # break if done
+        if done[0]:  #or (terminate_on_success and success["task"]):
+            end_step = step_i
+            break
 
-    except Exception as e:
-        print("WARNING: got rollout exception {}".format(e))
-
+    # except Exception as e:
+    #     print("WARNING: got rollout exception {}".format(e))
 
     if video_writer is not None:
         video_writer.save(video_frames, actions, rews)
@@ -375,6 +378,9 @@ def run_rollout(
     results["Return"] = total_reward
     results["Horizon"] = end_step + 1
     results["Success_Rate"] = float(total_reward > 0.99)
+    # print("Rollout results: Return = {:.3f}, Horizon = {}, Success Rate = {:.2f}".format(
+    #     results["Return"], results["Horizon"], results["Success_Rate"]
+    # ))
 
     # log additional success metrics
     # for k in success:
@@ -498,14 +504,15 @@ def rollout_with_stats(
                 print("Episode {}, horizon={}, num_success={}".format(ep_i + 1, horizon, num_success))
                 print(json.dumps(rollout_info, sort_keys=True, indent=4))
 
-        if video_dir is not None:
-            # close this env's video writer (next env has it's own)
-            env_video_writer.close()
 
         # average metric across all episodes
         rollout_logs = dict((k, [rollout_logs[i][k] for i in range(len(rollout_logs))]) for k in rollout_logs[0])
         rollout_logs_mean = dict((k, np.mean(v)) for k, v in rollout_logs.items())
         rollout_logs_mean["Time_Episode"] = np.sum(rollout_logs["time"]) / 60. # total time taken for rollouts in minutes
+        if video_dir is not None:
+            # close this env's video writer (next env has it's own)
+            video = env_video_writer.close()
+            rollout_logs_mean["video"] = video
         all_rollout_logs[env_key] = rollout_logs_mean
 
     if video_path is not None:

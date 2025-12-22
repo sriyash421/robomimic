@@ -43,6 +43,18 @@ class DiTPolicyConfig(BaseConfig):
         self.algo.optim_params.policy.learning_rate.do_not_lock_keys()
         self.algo.optim_params.policy.regularization.L2 = 1e-6          # L2 regularization strength
 
+        # optimization parameters
+        self.algo.optim_params.transformer_encoder.optimizer_type = "adamw"
+        self.algo.optim_params.transformer_encoder.learning_rate.initial = 1e-4      # policy learning rate
+        self.algo.optim_params.transformer_encoder.learning_rate.decay_factor = 0.1  # factor to decay LR by (if epoch schedule non-empty)
+        self.algo.optim_params.transformer_encoder.learning_rate.step_every_batch = True
+        self.algo.optim_params.transformer_encoder.learning_rate.scheduler_type = "cosine"
+        self.algo.optim_params.transformer_encoder.learning_rate.num_cycles = 0.5 # number of cosine cycles (used by "cosine" scheduler)
+        self.algo.optim_params.transformer_encoder.learning_rate.warmup_steps = 500 # number of warmup steps (used by "cosine" scheduler)
+        self.algo.optim_params.transformer_encoder.learning_rate.epoch_schedule = [] # epochs where LR decay occurs (used by "linear" and "multistep" schedulers)
+        self.algo.optim_params.transformer_encoder.learning_rate.do_not_lock_keys()
+        self.algo.optim_params.transformer_encoder.regularization.L2 = 1e-6          # L2 regularization strength
+
         # horizon parameters
         self.algo.horizon.observation_horizon = 1
         self.algo.horizon.action_horizon = 8
@@ -87,3 +99,4 @@ class DiTPolicyConfig(BaseConfig):
         self.algo.transformer.emb_dropout = 0.1                     # dropout probability for embedding inputs in transformer
         self.algo.transformer.attn_dropout = 0.1                    # dropout probability for attention outputs for each transformer block
         self.algo.transformer.block_output_dropout = 0.1            # dropout probability for final outputs for each transformer block
+        self.algo.transformer.token_dropout = 0.0                    # probability of dropping tokens in the input sequence

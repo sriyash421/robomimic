@@ -71,7 +71,7 @@ class VisualCore(EncoderCore, BaseNets.ConvBase):
         backbone_kwargs=None,
         pool_kwargs=None,
         flatten=True,
-        feature_dimension=64,
+        feature_dimension=None,
     ):
         """
         Args:

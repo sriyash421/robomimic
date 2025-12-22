@@ -1,7 +1,7 @@
 """
 Implementation of Behavioral Cloning (BC).
 """
-from collections import OrderedDict
+from collections import OrderedDict, deque
 
 import torch
 import torch.nn as nn
@@ -18,6 +18,9 @@ import robomimic.utils.torch_utils as TorchUtils
 import robomimic.utils.obs_utils as ObsUtils
 
 from robomimic.algo import register_algo_factory_func, PolicyAlgo
+
+from icl_exploration.utils.common import stack_dicts_torch
+from robomimic.utils.torch_utils import collate_torch_obs
 
 
 @register_algo_factory_func("bc")
@@ -47,7 +50,7 @@ def algo_config_to_class(algo_config):
         if rnn_enabled:
             raise NotImplementedError
         elif transformer_enabled:
-            raise NotImplementedError
+            algo_class, algo_kwargs = BC_Transformer, {}
         else:
             algo_class, algo_kwargs = BC_Gaussian, {}
     elif gmm_enabled:
@@ -683,17 +686,25 @@ class BC_Transformer(BC):
         Creates networks and places them into @self.nets.
         """
         assert self.algo_config.transformer.enabled
+        assert self.algo_config.gaussian.enabled
 
         self.nets = nn.ModuleDict()
-        self.nets["policy"] = PolicyNets.TransformerActorNetwork(
+        self.nets["policy"] = PolicyNets.TransformerGaussianActorNetwork(
             obs_shapes=self.obs_shapes,
             goal_shapes=self.goal_shapes,
             ac_dim=self.ac_dim,
+            fixed_std=self.algo_config.gaussian.fixed_std,
+            init_std=self.algo_config.gaussian.init_std,
+            std_limits=(self.algo_config.gaussian.min_std, 7.5),
+            std_activation=self.algo_config.gaussian.std_activation,
+            low_noise_eval=self.algo_config.gaussian.low_noise_eval,
             encoder_kwargs=ObsUtils.obs_encoder_kwargs_from_config(self.obs_config.encoder),
             **BaseNets.transformer_args_from_config(self.algo_config.transformer),
+
         )
         self._set_params_from_config()
         self.nets = self.nets.float().to(self.device)
+        self.obs_queue = None
         
     def _set_params_from_config(self):
         """
@@ -701,10 +712,10 @@ class BC_Transformer(BC):
         Called by @_create_networks method
         """
         self.context_length = self.algo_config.transformer.context_length
-        self.supervise_all_steps = self.algo_config.transformer.supervise_all_steps
-        self.pred_future_acs = self.algo_config.transformer.pred_future_acs
-        if self.pred_future_acs:
-            assert self.supervise_all_steps is True
+        # self.supervise_all_steps = self.algo_config.transformer.supervise_all_steps
+        # self.pred_future_acs = self.algo_config.transformer.pred_future_acs
+        # if self.pred_future_acs:
+        #     assert self.supervise_all_steps is True
 
     def process_batch_for_training(self, batch):
         """
@@ -721,20 +732,23 @@ class BC_Transformer(BC):
         h = self.context_length
         input_batch["obs"] = {k: batch["obs"][k][:, :h, :] for k in batch["obs"]}
         input_batch["goal_obs"] = batch.get("goal_obs", None) # goals may not be present
+        input_batch["actions"] = batch["actions"]  # B x T x Da
+        input_batch["expert_mask"] = batch["expert_mask"]  # B x T
+        input_batch["attention_mask"] = batch["attention_mask"]
 
-        if self.supervise_all_steps:
-            # supervision on entire sequence (instead of just current timestep)
-            if self.pred_future_acs:
-                ac_start = h - 1
-            else:
-                ac_start = 0
-            input_batch["actions"] = batch["actions"][:, ac_start:ac_start+h, :]
-        else:
-            # just use current timestep
-            input_batch["actions"] = batch["actions"][:, h-1, :]
+        # if self.supervise_all_steps:
+        #     # supervision on entire sequence (instead of just current timestep)
+        #     if self.pred_future_acs:
+        #         ac_start = h - 1
+        #     else:
+        #         ac_start = 0
+        #     input_batch["actions"] = batch["actions"][:, ac_start:ac_start+h, :]
+        # else:
+        #     # just use current timestep
+        #     input_batch["actions"] = batch["actions"][:, h-1, :]
 
-        if self.pred_future_acs:
-            assert input_batch["actions"].shape[1] == h
+        # if self.pred_future_acs:
+        #     assert input_batch["actions"].shape[1] == h
 
         input_batch = TensorUtils.to_device(TensorUtils.to_float(input_batch), self.device)
         return input_batch
@@ -752,19 +766,61 @@ class BC_Transformer(BC):
             predictions (dict): dictionary containing network outputs
         """
         # ensure that transformer context length is consistent with temporal dimension of observations
-        TensorUtils.assert_size_at_dim(
-            batch["obs"], 
-            size=(self.context_length), 
-            dim=1, 
-            msg="Error: expect temporal dimension of obs batch to match transformer context length {}".format(self.context_length),
-        )
+        # TensorUtils.assert_size_at_dim(
+        #     batch["obs"], 
+        #     size=(self.context_length), 
+        #     dim=1, 
+        #     msg="Error: expect temporal dimension of obs batch to match transformer context length {}".format(self.context_length),
+        # )
 
         predictions = OrderedDict()
-        predictions["actions"] = self.nets["policy"](obs_dict=batch["obs"], actions=None, goal_dict=batch["goal_obs"])
-        if not self.supervise_all_steps:
-            # only supervise final timestep
-            predictions["actions"] = predictions["actions"][:, -1, :]
+        dists = self.nets["policy"].forward_train(obs_dict=batch["obs"], actions=None, goal_dict=batch["goal_obs"])
+        predictions["actions"] = dists.mean
+        # if not self.supervise_all_steps:
+        #     # only supervise final timestep
+        #     predictions["actions"] = predictions["actions"][:, -1, :]
+        log_probs = dists.log_prob(batch["actions"])
+        predictions["log_probs"] = log_probs
         return predictions
+
+    def _compute_losses(self, predictions, batch):
+        """
+        Internal helper function for BC algo class. Compute losses based on
+        network outputs in @predictions dict, using reference labels in @batch.
+
+        Args:
+            predictions (dict): dictionary containing network outputs, from @_forward_training
+            batch (dict): dictionary with torch.Tensors sampled
+                from a data loader and filtered by @process_batch_for_training
+
+        Returns:
+            losses (dict): dictionary of losses computed over the batch
+        """
+        # loss is just negative log-likelihood of action targets
+        action_loss = -predictions["log_probs"] # (B, T)
+        attention_mask = batch["attention_mask"]  # (B, T)
+        expert_mask = batch["expert_mask"]  # (B, T)
+        attention_mask = attention_mask * expert_mask  # (B, T)
+        # apply attention mask
+        action_loss = (action_loss * attention_mask).sum() / attention_mask.sum()
+        return OrderedDict(
+            log_probs=-action_loss,
+            action_loss=action_loss,
+        )
+
+    def reset(self, resets):
+        B = len(resets)
+
+        if self.obs_queue is None or len(self.obs_queue) != B:
+            self.obs_queue = [deque(maxlen=self.context_length) for _ in range(B)]
+        
+        resets = torch.as_tensor(resets, dtype=torch.bool).cpu().numpy()
+        B = resets.shape[0]
+
+        # clear queues for envs that reset
+        for i in range(B):
+            if resets[i]:
+                self.obs_queue[i].clear()
 
     def get_action(self, obs_dict, goal_dict=None):
         """
@@ -776,16 +832,22 @@ class BC_Transformer(BC):
             action (torch.Tensor): action tensor
         """
         assert not self.nets.training
-        output = self.nets["policy"](obs_dict, actions=None, goal_dict=goal_dict)
+        B = obs_dict[next(iter(obs_dict.keys()))].shape[0]
+        for i in range(B):
+            # print(f"Updating obs queue {i} from {len(self.obs_queue[i])} to {len(self.obs_queue[i])+1}")
+            self.obs_queue[i].append({k: obs_dict[k][i].detach().clone() for k in obs_dict.keys()})
+        
+        obs_input = [stack_dicts_torch(self.obs_queue[i]) for i in range(B)]
+        obs_input = collate_torch_obs(obs_input, self.device)
+        output = self.nets["policy"](obs_input, actions=None, goal_dict=goal_dict)
 
-        if self.supervise_all_steps:
-            if self.algo_config.transformer.pred_future_acs:
-                output = output[:, 0, :]
-            else:
-                output = output[:, -1, :]
-        else:
-            output = output[:, -1, :]
-
+        attention_mask = obs_input["attention_mask"]  # (B, T)
+        seq_lens = attention_mask.sum(dim=1).long()  # (B,)
+        actions = []
+        for i in range(B):
+            actions.append(output[i, seq_lens[i]-1, :].unsqueeze(0))
+        output = torch.cat(actions, dim=0)  # (B, Da)
+        
         return output
 
         

@@ -77,18 +77,20 @@ class DataLogger(object):
                     self._wandb_logger.init(
                         # entity=Macros.WANDB_ENTITY,
                         project=config.experiment.logging.wandb_proj_name,
+                        group=os.environ.get("WANDB_GROUP", None),
                         name=config.experiment.name,
                         dir=log_dir,
                         mode=("offline" if attempt == num_attempts - 1 else "online"),
+                        config=dict(config.to_dict())
                     )
 
                     # set up info for identifying experiment
-                    wandb_config = {k: v for (k, v) in config.meta.items() if k not in ["hp_keys", "hp_values"]}
-                    for (k, v) in zip(config.meta["hp_keys"], config.meta["hp_values"]):
-                        wandb_config[k] = v
-                    if "algo" not in wandb_config:
-                        wandb_config["algo"] = config.algo_name
-                    self._wandb_logger.config.update(wandb_config)
+                    # wandb_config = {k: v for (k, v) in config.meta.items() if k not in ["hp_keys", "hp_values"]}
+                    # for (k, v) in zip(config.meta["hp_keys"], config.meta["hp_values"]):
+                    #     wandb_config[k] = v
+                    # if "algo" not in wandb_config:
+                    #     wandb_config["algo"] = config.algo_name
+                    # self._wandb_logger.config.update(wandb_config)
 
                     break
                 except Exception as e:

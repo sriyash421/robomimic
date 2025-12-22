@@ -533,7 +533,8 @@ class ResNet18Conv(ConvBase):
         # cut the last fc layer
         self._input_coord_conv = input_coord_conv
         self._input_channel = input_channel
-        self.nets = torch.nn.Sequential(*(list(net.children())[:-2]))
+        # self.nets = torch.nn.Sequential(*(list(net.children())[:-2]))
+        self.nets = torch.nn.Sequential(*(list(net.children())[:-1]))
 
     def output_shape(self, input_shape):
         """
@@ -548,9 +549,14 @@ class ResNet18Conv(ConvBase):
             out_shape ([int]): list of integers corresponding to output shape
         """
         assert(len(input_shape) == 3)
-        out_h = int(math.ceil(input_shape[1] / 32.))
-        out_w = int(math.ceil(input_shape[2] / 32.))
-        return [512, out_h, out_w]
+        dummy_input = torch.rand(1, input_shape[0], input_shape[1], input_shape[2])
+        with torch.no_grad():
+            dummy_input = TensorUtils.to_device(dummy_input, next(self.nets.parameters()).device)
+            dummy_output = self.nets(dummy_input)
+        return list(dummy_output.shape[1:])
+        # out_h = int(math.ceil(input_shape[1] / 32.))
+        # out_w = int(math.ceil(input_shape[2] / 32.))
+        # return [512, out_h, out_w]
 
     def __repr__(self):
         """Pretty print network."""

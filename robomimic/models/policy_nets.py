@@ -1568,3 +1568,156 @@ class VAEActor(Module):
             mod = list(obs_dict.keys())[0]
             n = obs_dict[mod].shape[0]
         return self.decode(obs_dict=obs_dict, goal_dict=goal_dict, z=z, n=n)["action"]
+
+class TransformerGaussianActorNetwork(TransformerActorNetwork):
+    """
+    A Transformer policy network that predicts a diagonal unimodal Gaussian distribution
+    over actions from observation sequences.
+    """
+    def __init__(
+        self,
+        obs_shapes,
+        ac_dim,
+        transformer_embed_dim,
+        transformer_num_layers,
+        transformer_num_heads,
+        transformer_context_length,
+        transformer_emb_dropout=0.1,
+        transformer_attn_dropout=0.1,
+        transformer_block_output_dropout=0.1,
+        transformer_sinusoidal_embedding=False,
+        transformer_activation="gelu",
+        transformer_nn_parameter_for_timesteps=False,
+        fixed_std=False,
+        std_activation="softplus",
+        init_std=0.3,
+        mean_limits=(-9.0, 9.0),
+        std_limits=(0.007, 7.5),
+        low_noise_eval=True,
+        use_tanh=False,
+        goal_shapes=None,
+        encoder_kwargs=None,
+    ):
+        """
+        Args:
+            obs_shapes (OrderedDict): a dictionary that maps modality to
+                expected shapes for observations.
+            ac_dim (int): dimension of action space.
+            transformer_embed_dim (int): dimension for embeddings used by transformer
+            transformer_num_layers (int): number of transformer blocks to stack
+            transformer_num_heads (int): number of attention heads for each transformer block
+            transformer_context_length (int): expected length of input sequences
+            transformer_emb_dropout (float): dropout probability for embedding inputs in transformer
+            transformer_attn_dropout (float): dropout probability for attention outputs for each transformer block
+            transformer_block_output_dropout (float): dropout probability for final outputs for each transformer block
+            transformer_sinusoidal_embedding (bool): use sinusoidal embeddings for time
+            transformer_activation (str): activation function for transformer
+            transformer_nn_parameter_for_timesteps (bool): use nn.Parameter for time embedding
+            fixed_std (bool): if True, std is not learned, but kept constant at @init_std
+            std_activation (str): activation for std ("softplus" or "exp")
+            init_std (float): initial std value
+            mean_limits (tuple): clamp mean output
+            std_limits (tuple): clamp std output
+            low_noise_eval (bool): if True, use low noise at eval
+            use_tanh (bool): if True, use tanh-Gaussian
+            goal_shapes (OrderedDict): goal observation shapes
+            encoder_kwargs (dict or None): encoder kwargs
+        """
+        self.fixed_std = fixed_std
+        self.init_std = init_std
+        self.mean_limits = np.array(mean_limits)
+        self.std_limits = np.array(std_limits)
+        self.low_noise_eval = low_noise_eval
+        self.use_tanh = use_tanh
+
+        def softplus_scaled(x):
+            out = F.softplus(x)
+            out = out * (self.init_std / F.softplus(torch.zeros(1).to(x.device)))
+            return out
+
+        self.activations = {
+            None: lambda x: x,
+            "softplus": softplus_scaled,
+            "exp": torch.exp,
+        }
+        assert std_activation in self.activations, \
+            "std_activation must be one of: {}; instead got: {}".format(self.activations.keys(), std_activation)
+        self.std_activation = std_activation if not self.fixed_std else None
+
+        super().__init__(
+            obs_shapes=obs_shapes,
+            ac_dim=ac_dim,
+            transformer_embed_dim=transformer_embed_dim,
+            transformer_num_layers=transformer_num_layers,
+            transformer_num_heads=transformer_num_heads,
+            transformer_context_length=transformer_context_length,
+            transformer_emb_dropout=transformer_emb_dropout,
+            transformer_attn_dropout=transformer_attn_dropout,
+            transformer_block_output_dropout=transformer_block_output_dropout,
+            transformer_sinusoidal_embedding=transformer_sinusoidal_embedding,
+            transformer_activation=transformer_activation,
+            transformer_nn_parameter_for_timesteps=transformer_nn_parameter_for_timesteps,
+            goal_shapes=goal_shapes,
+            encoder_kwargs=encoder_kwargs,
+        )
+
+    def _get_output_shapes(self):
+        """
+        Output dictionary for the last layer: mean and scale for Gaussian.
+        """
+        return OrderedDict(
+            mean=(self.ac_dim,),
+            scale=(self.ac_dim,),
+        )
+
+    def forward_train(self, obs_dict, actions=None, goal_dict=None, low_noise_eval=None):
+        """
+        Return full Gaussian distribution, useful for train-time metrics.
+        """
+        if self._is_goal_conditioned:
+            assert goal_dict is not None
+            mod = list(obs_dict.keys())[0]
+            goal_dict = TensorUtils.unsqueeze_expand_at(goal_dict, size=obs_dict[mod].shape[1], dim=1)
+
+        forward_kwargs = dict(obs=obs_dict, goal=goal_dict)
+        outputs = super(TransformerActorNetwork, self).forward(**forward_kwargs)
+        mean = outputs["mean"]
+        scale = outputs["scale"] if not self.fixed_std else torch.ones_like(mean) * self.init_std
+
+        # Clamp mean
+        mean = torch.clamp(mean, min=self.mean_limits[0], max=self.mean_limits[1])
+
+        # Optionally squash mean to [-1, 1]
+        if not self.use_tanh:
+            mean = torch.tanh(mean)
+
+        # Calculate scale
+        if low_noise_eval is None:
+            low_noise_eval = self.low_noise_eval
+        if low_noise_eval and (not self.training):
+            scale = torch.ones_like(mean) * 1e-4
+        else:
+            scale = self.activations[self.std_activation](scale)
+            scale = torch.clamp(scale, min=self.std_limits[0], max=self.std_limits[1])
+
+        dist = D.Normal(loc=mean, scale=scale)
+        dist = D.Independent(dist, 1)
+        if self.use_tanh:
+            dist = TanhWrappedDistribution(base_dist=dist, scale=1.)
+        return dist
+
+    def forward(self, obs_dict, actions=None, goal_dict=None):
+        """
+        Samples actions from the policy distribution.
+        """
+        dist = self.forward_train(obs_dict=obs_dict, actions=actions, goal_dict=goal_dict)
+        if self.low_noise_eval and (not self.training):
+            if self.use_tanh:
+                return torch.tanh(dist.mean)
+            return dist.mean
+        return dist.sample()
+
+    def _to_string(self):
+        msg = "action_dim={}\nfixed_std={}\nstd_activation={}\ninit_std={}\nmean_limits={}\nstd_limits={}\nlow_noise_eval={}".format(
+            self.ac_dim, self.fixed_std, self.std_activation, self.init_std, self.mean_limits, self.std_limits, self.low_noise_eval)
+        return msg

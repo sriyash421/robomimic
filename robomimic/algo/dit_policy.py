@@ -31,6 +31,9 @@ import robomimic.utils.obs_utils as ObsUtils
 import transformers
 from transformers import GPT2Config, GPT2Model
 
+from icl_exploration.utils.common import stack_dicts_torch
+from robomimic.utils.torch_utils import collate_torch_obs
+
 
 @register_algo_factory_func("dit_policy")
 def algo_config_to_class(algo_config):
@@ -140,6 +143,7 @@ class DiTPolicyUNet(PolicyAlgo):
         self.obs_queue = None
         self.action_queue = None
         self.upweight_gripper_loss = False
+        self.token_dropout = self.algo_config.transformer.token_dropout
     
     def chunk_actions(self, actions, expert_mask, attention_mask):
         """
@@ -246,6 +250,10 @@ class DiTPolicyUNet(PolicyAlgo):
                 obs_features = TensorUtils.time_distributed(inputs, self.nets["policy"]["obs_encoder"], inputs_as_kwargs=True)
             assert obs_features.ndim == 3  # [B, T, D]
 
+            if self.token_dropout > 0.0:
+                # randomly drop tokens in the input sequence
+                dropout_mask = torch.rand(B, T, device=self.device) >= self.token_dropout  # [B, T]
+                obs_features = obs_features * dropout_mask.unsqueeze(-1)  # [B, T, D]
             # pass through projection layer
             if torch.cuda.device_count() > 1:
                 obs_features = self.nets["policy"].module.projection_layer(obs_features)
@@ -354,16 +362,31 @@ class DiTPolicyUNet(PolicyAlgo):
             log["Policy_Grad_Norms"] = info["policy_grad_norms"]
         return log
     
-    def reset(self):
+    def reset(self, resets):
         """
         Reset algo state to prepare for environment rollouts.
         """
         # setup inference queues
         Ta = self.algo_config.horizon.action_horizon
-        obs_queue = deque(maxlen=self.context_length)
-        action_queue = deque(maxlen=Ta)
-        self.obs_queue = obs_queue
-        self.action_queue = action_queue
+        B = len(resets)
+
+        if self.obs_queue is None or len(self.obs_queue) != B:
+            self.obs_queue = [deque(maxlen=self.context_length) for _ in range(B)]
+            self.action_queue = [deque(maxlen=Ta) for _ in range(B)]
+
+        resets = torch.as_tensor(resets, dtype=torch.bool).cpu().numpy()
+        B = resets.shape[0]
+
+        # clear queues for envs that reset
+        for i in range(B):
+            if resets[i]:
+                self.obs_queue[i].clear()
+                self.action_queue[i].clear()
+
+        # obs_queue = deque(maxlen=self.context_length)
+        # action_queue = deque(maxlen=Ta)
+        # self.obs_queue = obs_queue
+        # self.action_queue = action_queue
     
     def get_action(self, obs_dict, goal_dict=None):
         """
@@ -378,26 +401,41 @@ class DiTPolicyUNet(PolicyAlgo):
         """
         # obs_dict: key: [1,D]
         Ta = self.algo_config.horizon.action_horizon
-        self.obs_queue.append(obs_dict)
+        B = obs_dict[next(iter(obs_dict.keys()))].shape[0]
+
+        for i in range(B):
+            # print(f"Updating obs queue {i} from {len(self.obs_queue[i])} to {len(self.obs_queue[i])+1}")
+            self.obs_queue[i].append({k: obs_dict[k][i].detach().clone() for k in obs_dict.keys()})
         
-        if len(self.action_queue) == 0:
-            # no actions left, run inference
-            # [1,T,Da]
-            action_sequence = self._get_action_trajectory()
-            assert action_sequence.shape[1] == Ta
-            
-            # put actions into the queue
-            self.action_queue.extend(action_sequence[0])
+        action_reset_idxs = [i for i in range(B) if len(self.action_queue[i]) == 0]
+        if len(action_reset_idxs) > 0:
+            obs_input = [stack_dicts_torch(self.obs_queue[i]) for i in action_reset_idxs]
+            obs_input = collate_torch_obs(obs_input, self.device)
+            action_sequence = self._get_action_trajectory(obs_input)
+            for idx, i in enumerate(action_reset_idxs):
+                self.action_queue[i].extend(action_sequence[idx])
         
-        # has action, execute from left to right
-        # [Da]
-        action = self.action_queue.popleft()
-        
-        # [1,Da]
-        action = action.unsqueeze(0)
+        actions = [aq.popleft() for aq in self.action_queue]
+        action = torch.stack(actions, dim=0)
         return action
+        # if len(self.action_queue) == 0:
+        #     # no actions left, run inference
+        #     # [1,T,Da]
+        #     action_sequence = self._get_action_trajectory()
+        #     assert action_sequence.shape[1] == Ta
+            
+        #     # put actions into the queue
+        #     self.action_queue.extend(action_sequence[0])
         
-    def _get_action_trajectory(self):
+        # # has action, execute from left to right
+        # # [Da]
+        # action = self.action_queue.popleft()
+        
+        # # [1,Da]
+        # action = action.unsqueeze(0)
+        # return action
+        
+    def _get_action_trajectory(self, obs):
         assert not self.nets.training
         # To = self.algo_config.horizon.observation_horizon
         Ta = self.algo_config.horizon.action_horizon
@@ -416,14 +454,14 @@ class DiTPolicyUNet(PolicyAlgo):
             nets = self.ema.averaged_model
         
         # convert obs queue to batch
-        obs_list = list(self.obs_queue)
-        obs_dict = dict()
-        for k in obs_list[0]:
-            obs_dict[k] = torch.cat([ obs_list[i][k].unsqueeze(1) for i in range(len(obs_list)) ], dim=1)  # [1,T,Do]
+        # obs_list = list(self.obs_queue)
+        # obs_dict = dict()
+        # for k in obs_list[0]:
+        #     obs_dict[k] = torch.cat([ obs_list[i][k].unsqueeze(1) for i in range(len(obs_list)) ], dim=1)  # [1,T,Do]
 
         # encode obs
         inputs = {
-            "obs": obs_dict
+            "obs": obs
         }
         for k in self.obs_shapes:
             # first two dimensions should be [B, T] for inputs
@@ -440,7 +478,8 @@ class DiTPolicyUNet(PolicyAlgo):
         obs_features = nets["policy"]["projection_layer"](obs_features)
 
         # pass through transformer
-        attention_mask = torch.ones((B, obs_features.shape[1]), device=obs_features.device)
+        attention_mask = obs["attention_mask"]
+        # print(f"Shape of input features: ", obs_features.shape)
         transformer_outputs = nets["policy"]["transformer_encoder"](
             inputs_embeds=obs_features,
             attention_mask=attention_mask
@@ -448,7 +487,12 @@ class DiTPolicyUNet(PolicyAlgo):
         transformer_features = transformer_outputs.last_hidden_state  # [B, T, D]
         assert transformer_features.ndim == 3  # [B, T, D]
 
-        obs_cond = transformer_features[:, -1, :].reshape(B, -1)  # [B, D], only use last feature for conditioning
+        seq_lens = attention_mask.sum(dim=1).long()  # [B]
+        # obs_cond = transformer_features[:, -1, :].reshape(B, -1)  # [B, D], only use last feature for conditioning
+        obs_cond = torch.stack(
+            [ transformer_features[b, seq_lens[b]-1, :] for b in range(B) ],
+            dim=0
+        )  # [B, D], only use last actual feature for conditioning
 
         # initialize action from Guassian noise
         noisy_action = torch.randn(

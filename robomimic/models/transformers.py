@@ -420,7 +420,7 @@ class GPT_Backbone(Module):
         return input_shape[:-1] + [self.output_dim]
 
     def forward(self, inputs):
-        assert inputs.shape[1:] == (self.context_length, self.embed_dim), inputs.shape
+        # assert inputs.shape[1:] == (self.context_length, self.embed_dim), inputs.shape
         x = self.nets["transformer"](inputs)
         transformer_output = self.nets["output_ln"](x)
         return transformer_output

@@ -1088,7 +1088,7 @@ class MIMO_Transformer(Module):
             timesteps = timesteps.long()
 
         if self.transformer_nn_parameter_for_timesteps:
-            time_embeddings = self.params["embed_timestep"]
+            time_embeddings = self.params["embed_timestep"][:, : embeddings.shape[1]]
         else:
             time_embeddings = self.nets["embed_timestep"](
                 timesteps

@@ -742,3 +742,17 @@ def collate_fn(batch, add_attn_mask=True):
             attn_mask[i, :l] = 1
         collated_batch['attention_mask'] = attn_mask
     return collated_batch
+
+def collate_torch_obs(obs_dict, device):
+    collated_obs_dict = {}
+    seq_lens = [obs[next(iter(obs))].shape[0] for obs in obs_dict]
+    max_len = max(seq_lens)
+    for key in obs_dict[0]:
+        values = [obs[key] for obs in obs_dict]
+        collated_obs_dict[key] = torch.nn.utils.rnn.pad_sequence(
+            values, batch_first=True, padding_value=0.0)
+    attention_mask = torch.zeros((len(obs_dict), max_len), dtype=torch.bool, device=device)
+    for i, l in enumerate(seq_lens):
+        attention_mask[i, :l] = 1
+    collated_obs_dict['attention_mask'] = attention_mask
+    return collated_obs_dict

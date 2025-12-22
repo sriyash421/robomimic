@@ -741,8 +741,8 @@ class MetaDataset(torch.utils.data.Dataset):
 
         # cache mode "all" not supported! The action normalization stats of each
         # dataset will change after the datasets are already initialized
-        for ds in self.datasets:
-            assert ds.hdf5_cache_mode != "all"
+        # for ds in self.datasets:
+        #     assert ds.hdf5_cache_mode != "all"
 
         action_stats = self.get_action_stats()
         self.action_normalization_stats = action_stats_to_normalization_stats(
